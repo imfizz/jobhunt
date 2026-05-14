@@ -5,8 +5,8 @@ const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TO
 export async function sendWhatsApp(message: string): Promise<void> {
   try {
     await client.messages.create({
-      from: process.env.TWILIO_WHATSAPP_FROM,
-      to: process.env.TWILIO_WHATSAPP_TO,
+      from: process.env.TWILIO_WHATSAPP_FROM!,
+      to: process.env.TWILIO_WHATSAPP_TO!,
       body: message
     });
   } catch (e: any) {
