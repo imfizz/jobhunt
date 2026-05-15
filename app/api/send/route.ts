@@ -4,7 +4,21 @@ import { sendWhatsApp, formatApplicationNotification } from '@/lib/whatsapp';
 
 export async function POST(req: NextRequest) {
   try {
-    const { to, subject, body, jobTitle, company, matchScore, draftOnly = false } = await req.json();
+    const {
+      to,
+      subject,
+      body,
+      jobTitle,
+      company,
+      matchScore,
+      draftOnly = false,
+      jobUrl,
+      salary,
+      location,
+      source,
+      jobDescription
+    } = await req.json();
+
     if (!to || !subject || !body) {
       return NextResponse.json({ error: 'Missing fields' }, { status: 400 });
     }
@@ -12,13 +26,18 @@ export async function POST(req: NextRequest) {
     const id = await sendEmail(to, subject, body, draftOnly);
 
     await sendWhatsApp(
-      formatApplicationNotification(
-        jobTitle || subject,
-        company || to,
-        matchScore || 0,
-        body,
-        draftOnly ? 'draft' : 'sent'
-      )
+      formatApplicationNotification({
+        jobTitle: jobTitle || subject,
+        company: company || to,
+        matchScore: matchScore || 0,
+        emailPreview: body,
+        status: draftOnly ? 'draft' : 'sent',
+        jobUrl,
+        salary,
+        location,
+        source,
+        jobDescription
+      })
     );
 
     return NextResponse.json({ ok: true, id, status: draftOnly ? 'draft' : 'sent' });

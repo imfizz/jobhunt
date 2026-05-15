@@ -50,7 +50,18 @@ export async function GET(req: NextRequest) {
         }
 
         await sendWhatsApp(
-          formatApplicationNotification(job.title, job.company, app.matchScore, app.emailBody, status)
+          formatApplicationNotification({
+            jobTitle: job.title,
+            company: job.company,
+            matchScore: app.matchScore,
+            emailPreview: app.emailBody,
+            status,
+            jobUrl: job.url,
+            salary: job.salary,
+            location: job.location,
+            source: (listing as any).source,
+            jobDescription: job.description
+          })
         );
 
         results.push({

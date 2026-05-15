@@ -14,21 +14,55 @@ export async function sendWhatsApp(message: string): Promise<void> {
   }
 }
 
-export function formatApplicationNotification(
-  jobTitle: string,
-  company: string,
-  matchScore: number,
-  emailPreview: string,
-  status: 'sent' | 'draft' | 'failed'
-): string {
-  const statusEmoji = status === 'sent' ? '✅' : status === 'draft' ? '📝' : '❌';
-  return `${statusEmoji} *Job Application*
+interface NotificationOptions {
+  jobTitle: string;
+  company: string;
+  matchScore: number;
+  emailPreview: string;
+  status: 'sent' | 'draft' | 'failed';
+  jobUrl?: string;
+  salary?: string;
+  location?: string;
+  source?: string;
+  jobDescription?: string;
+}
 
-*${jobTitle}*
-${company}
-Match: ${matchScore}/100
-Status: ${status.toUpperCase()}
+export function formatApplicationNotification(opts: NotificationOptions): string {
+  const statusEmoji = opts.status === 'sent' ? '✅' : opts.status === 'draft' ? '📝' : '❌';
 
-Preview:
-${emailPreview.slice(0, 200)}${emailPreview.length > 200 ? '…' : ''}`;
+  const lines: string[] = [];
+  lines.push(`${statusEmoji} *Job Application*`);
+  lines.push('');
+  lines.push(`*${opts.jobTitle}*`);
+  lines.push(`🏢 ${opts.company}`);
+
+  if (opts.location) lines.push(`📍 ${opts.location}`);
+  if (opts.salary) lines.push(`💰 ${opts.salary}`);
+  if (opts.source) lines.push(`🔎 Source: ${opts.source}`);
+
+  lines.push(`⭐ Match: ${opts.matchScore}/100`);
+  lines.push(`📊 Status: ${opts.status.toUpperCase()}`);
+
+  if (opts.jobUrl) {
+    lines.push('');
+    lines.push(`🔗 ${opts.jobUrl}`);
+  }
+
+  if (opts.jobDescription) {
+    lines.push('');
+    lines.push('*Job description:*');
+    const trimmed = opts.jobDescription.length > 500
+      ? opts.jobDescription.slice(0, 500) + '…'
+      : opts.jobDescription;
+    lines.push(trimmed);
+  }
+
+  lines.push('');
+  lines.push('*Email preview:*');
+  const previewTrimmed = opts.emailPreview.length > 300
+    ? opts.emailPreview.slice(0, 300) + '…'
+    : opts.emailPreview;
+  lines.push(previewTrimmed);
+
+  return lines.join('\n');
 }

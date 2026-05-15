@@ -79,7 +79,12 @@ export default function Dashboard() {
           jobTitle: job?.title,
           company: job?.company,
           matchScore: app?.matchScore,
-          draftOnly
+          draftOnly,
+          jobUrl: job?.url || (mode === 'url' ? url : ''),
+          salary: job?.salary,
+          location: job?.location,
+          source: mode === 'url' ? 'Manual URL' : 'Manual paste',
+          jobDescription: job?.description
         })
       });
       const data = await res.json();
