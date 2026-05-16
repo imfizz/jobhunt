@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sendEmail } from '@/lib/gmail';
 import { sendWhatsApp, formatApplicationNotification } from '@/lib/whatsapp';
+import { stripDashes } from '@/lib/claude';
 
 export async function POST(req: NextRequest) {
   try {
@@ -16,27 +17,34 @@ export async function POST(req: NextRequest) {
       salary,
       location,
       source,
-      jobDescription
+      jobDescription,
+      primaryStack,
+      roleReasoning
     } = await req.json();
 
     if (!to || !subject || !body) {
       return NextResponse.json({ error: 'Missing fields' }, { status: 400 });
     }
 
-    const id = await sendEmail(to, subject, body, draftOnly);
+    const cleanSubject = stripDashes(subject);
+    const cleanBody = stripDashes(body);
+
+    const id = await sendEmail(to, cleanSubject, cleanBody, draftOnly);
 
     await sendWhatsApp(
       formatApplicationNotification({
-        jobTitle: jobTitle || subject,
+        jobTitle: jobTitle || cleanSubject,
         company: company || to,
         matchScore: matchScore || 0,
-        emailPreview: body,
+        emailPreview: cleanBody,
         status: draftOnly ? 'draft' : 'sent',
         jobUrl,
         salary,
         location,
         source,
-        jobDescription
+        jobDescription,
+        primaryStack,
+        roleReasoning
       })
     );
 

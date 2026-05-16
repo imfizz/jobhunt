@@ -1,4 +1,5 @@
 import twilio from 'twilio';
+import { stripDashes } from './claude';
 
 const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
@@ -7,7 +8,7 @@ export async function sendWhatsApp(message: string): Promise<void> {
     await client.messages.create({
       from: process.env.TWILIO_WHATSAPP_FROM!,
       to: process.env.TWILIO_WHATSAPP_TO!,
-      body: message
+      body: stripDashes(message)
     });
   } catch (e: any) {
     console.error('WhatsApp send failed:', e.message);
@@ -25,6 +26,8 @@ interface NotificationOptions {
   location?: string;
   source?: string;
   jobDescription?: string;
+  primaryStack?: string[];
+  roleReasoning?: string;
 }
 
 export function formatApplicationNotification(opts: NotificationOptions): string {
@@ -39,9 +42,18 @@ export function formatApplicationNotification(opts: NotificationOptions): string
   if (opts.location) lines.push(`📍 ${opts.location}`);
   if (opts.salary) lines.push(`💰 ${opts.salary}`);
   if (opts.source) lines.push(`🔎 Source: ${opts.source}`);
+  if (opts.primaryStack && opts.primaryStack.length > 0) {
+    lines.push(`🛠 Stack: ${opts.primaryStack.join(', ')}`);
+  }
 
   lines.push(`⭐ Match: ${opts.matchScore}/100`);
   lines.push(`📊 Status: ${opts.status.toUpperCase()}`);
+
+  if (opts.roleReasoning) {
+    lines.push('');
+    lines.push('*Why this fits:*');
+    lines.push(opts.roleReasoning);
+  }
 
   if (opts.jobUrl) {
     lines.push('');
@@ -52,7 +64,7 @@ export function formatApplicationNotification(opts: NotificationOptions): string
     lines.push('');
     lines.push('*Job description:*');
     const trimmed = opts.jobDescription.length > 500
-      ? opts.jobDescription.slice(0, 500) + '…'
+      ? opts.jobDescription.slice(0, 500) + '...'
       : opts.jobDescription;
     lines.push(trimmed);
   }
@@ -60,9 +72,9 @@ export function formatApplicationNotification(opts: NotificationOptions): string
   lines.push('');
   lines.push('*Email preview:*');
   const previewTrimmed = opts.emailPreview.length > 300
-    ? opts.emailPreview.slice(0, 300) + '…'
+    ? opts.emailPreview.slice(0, 300) + '...'
     : opts.emailPreview;
   lines.push(previewTrimmed);
 
-  return lines.join('\n');
+  return stripDashes(lines.join('\n'));
 }
