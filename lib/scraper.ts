@@ -1,4 +1,3 @@
-import * as cheerio from 'cheerio';
 import type { JobDetails } from './claude';
 
 interface JobListing {
@@ -9,239 +8,143 @@ interface JobListing {
   salary?: string;
   source: string;
   postedAt?: Date;
+  description?: string;
 }
-
-const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 const MAX_AGE_DAYS = 3;
 const MAX_AGE_MS = MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
 
 function isFresh(date?: Date): boolean {
-  if (!date) return true; // if we cannot determine date, do not skip; let AI decide
+  if (!date) return true;
   return (Date.now() - date.getTime()) <= MAX_AGE_MS;
 }
 
-function parseDate(raw: any): Date | undefined {
-  if (!raw) return undefined;
-  if (typeof raw === 'string') {
-    const d = new Date(raw);
-    if (!isNaN(d.getTime())) return d;
-  }
-  return undefined;
-}
-
-function parseRelativeDate(text?: string): Date | undefined {
-  if (!text) return undefined;
-  const now = Date.now();
-  const m = text.match(/(\d+)\s*(minute|hour|day|week|month)s?\s*ago/i);
-  if (!m) return undefined;
-  const n = parseInt(m[1]);
-  const unit = m[2].toLowerCase();
-  const multipliers: Record<string, number> = {
-    minute: 60_000,
-    hour: 3_600_000,
-    day: 86_400_000,
-    week: 604_800_000,
-    month: 2_592_000_000
-  };
-  return new Date(now - n * multipliers[unit]);
-}
-
-export async function scrapeKalibrr(): Promise<JobListing[]> {
+/**
+ * JSearch API call. Each call costs 1 request against the 200/month quota.
+ * Returns up to 10 jobs per call by default.
+ *
+ * We use date_posted=3days to pre-filter to fresh listings.
+ */
+async function callJSearch(query: string): Promise<JobListing[]> {
   try {
-    const queries = ['javascript', 'fullstack', 'frontend'];
-    const allJobs: JobListing[] = [];
+    const url = `https://jsearch.p.rapidapi.com/search?query=${encodeURIComponent(query)}&page=1&num_pages=1&date_posted=3days`;
 
-    for (const query of queries) {
-      const url = `https://www.kalibrr.com/kjs/job_board/search?text=${encodeURIComponent(query)}&limit=20&offset=0`;
-      const res = await fetch(url, { headers: { 'User-Agent': USER_AGENT, 'Accept': 'application/json' } });
-      if (!res.ok) continue;
-      const data = await res.json();
-      const jobs = data?.jobs || [];
-
-      for (const j of jobs) {
-        const postedAt = parseDate(j.activation_date || j.created_date || j.updated_at);
-        if (!isFresh(postedAt)) continue;
-
-        allJobs.push({
-          title: j.name,
-          company: j.company_info?.name || j.company_name || 'Unknown',
-          url: `https://www.kalibrr.com/c/${j.company_info?.code}/jobs/${j.id}/${j.slug}`,
-          location: j.google_location?.address || j.location || 'Philippines',
-          salary: j.base_salary_currency && j.base_salary
-            ? `${j.base_salary_currency} ${j.base_salary} to ${j.maximum_salary} per ${j.salary_interval}`
-            : '',
-          source: 'Kalibrr',
-          postedAt
-        });
+    const res = await fetch(url, {
+      headers: {
+        'X-RapidAPI-Key': process.env.JSEARCH_API_KEY!,
+        'X-RapidAPI-Host': 'jsearch.p.rapidapi.com'
       }
+    });
+
+    if (!res.ok) {
+      console.error('JSearch returned', res.status);
+      return [];
     }
 
-    return allJobs;
+    const data = await res.json();
+    const jobs = data?.data || [];
+
+    return jobs.map((j: any): JobListing => {
+      let salary = '';
+      if (j.job_min_salary && j.job_max_salary) {
+        salary = `${j.job_salary_currency || ''} ${j.job_min_salary} to ${j.job_max_salary} per ${j.job_salary_period || 'year'}`.trim();
+      } else if (j.job_salary) {
+        salary = j.job_salary;
+      }
+
+      const location = [j.job_city, j.job_state, j.job_country].filter(Boolean).join(', ') || 'Remote';
+
+      const postedAt = j.job_posted_at_datetime_utc
+        ? new Date(j.job_posted_at_datetime_utc)
+        : (j.job_posted_at_timestamp ? new Date(j.job_posted_at_timestamp * 1000) : undefined);
+
+      return {
+        title: j.job_title || 'Unknown',
+        company: j.employer_name || 'Unknown',
+        url: j.job_apply_link || j.job_google_link || '',
+        location,
+        salary,
+        source: j.job_publisher || 'JSearch',
+        postedAt,
+        description: j.job_description || ''
+      };
+    });
   } catch (e) {
-    console.error('Kalibrr scrape failed:', e);
+    console.error('JSearch call failed:', e);
     return [];
   }
 }
 
-export async function scrapeJobStreet(): Promise<JobListing[]> {
-  try {
-    const queries = ['javascript', 'fullstack', 'frontend'];
-    const allJobs: JobListing[] = [];
-
-    for (const query of queries) {
-      const url = `https://ph.jobstreet.com/api/jobsearch/v5/search?siteKey=PH-Main&sourcesystem=houston&where=All+Philippines&keywords=${encodeURIComponent(query)}&pageSize=20&include=seodata&sortmode=ListedDate`;
-      const res = await fetch(url, {
-        headers: {
-          'User-Agent': USER_AGENT,
-          'Accept': 'application/json',
-          'Origin': 'https://ph.jobstreet.com',
-          'Referer': 'https://ph.jobstreet.com/'
-        }
-      });
-      if (!res.ok) continue;
-      const data = await res.json();
-      const jobs = data?.data || [];
-
-      for (const j of jobs) {
-        const postedAt = parseDate(j.listingDate) || parseRelativeDate(j.listingDateDisplay);
-        if (!isFresh(postedAt)) continue;
-
-        allJobs.push({
-          title: j.title,
-          company: j.advertiser?.description || 'Unknown',
-          url: `https://ph.jobstreet.com/job/${j.id}`,
-          location: j.locations?.[0]?.label || 'Philippines',
-          salary: j.salary?.label || '',
-          source: 'JobStreet',
-          postedAt
-        });
-      }
-    }
-
-    return allJobs;
-  } catch (e) {
-    console.error('JobStreet scrape failed:', e);
-    return [];
-  }
-}
-
-export async function scrapeIndeed(): Promise<JobListing[]> {
-  try {
-    const queries = ['javascript+developer', 'fullstack+developer', 'frontend+developer'];
-    const allJobs: JobListing[] = [];
-
-    for (const query of queries) {
-      // fromage=3 means "posted in last 3 days"
-      const url = `https://ph.indeed.com/jobs?q=${query}&l=Remote&sort=date&fromage=3`;
-      const res = await fetch(url, {
-        headers: {
-          'User-Agent': USER_AGENT,
-          'Accept': 'text/html,application/xhtml+xml',
-          'Accept-Language': 'en-US,en;q=0.9'
-        }
-      });
-      if (!res.ok) {
-        console.warn('Indeed returned', res.status, 'for', query);
-        continue;
-      }
-      const html = await res.text();
-      const $ = cheerio.load(html);
-
-      $('a[data-jk]').each((_, el) => {
-        const title = $(el).find('span[title]').attr('title') || $(el).find('h2 span').text().trim();
-        const company = $(el).closest('.job_seen_beacon').find('[data-testid="company-name"]').text().trim();
-        const location = $(el).closest('.job_seen_beacon').find('[data-testid="text-location"]').text().trim();
-        const dateText = $(el).closest('.job_seen_beacon').find('[data-testid="myJobsStateDate"]').text().trim();
-        const postedAt = parseRelativeDate(dateText);
-        const jk = $(el).attr('data-jk');
-
-        if (!isFresh(postedAt)) return;
-
-        if (title && jk) {
-          allJobs.push({
-            title,
-            company: company || 'Unknown',
-            url: `https://ph.indeed.com/viewjob?jk=${jk}`,
-            location: location || 'Remote',
-            salary: '',
-            source: 'Indeed',
-            postedAt
-          });
-        }
-      });
-    }
-
-    return allJobs;
-  } catch (e) {
-    console.error('Indeed scrape failed:', e);
-    return [];
-  }
-}
-
-export async function fetchJobDescription(url: string): Promise<string> {
-  try {
-    const res = await fetch(url, { headers: { 'User-Agent': USER_AGENT } });
-    if (!res.ok) return '';
-    const html = await res.text();
-    const $ = cheerio.load(html);
-    $('script, style, nav, footer, header, noscript, iframe').remove();
-
-    const selectors = [
-      '.jobsearch-JobComponent-description',
-      '#jobDescriptionText',
-      '.job-description',
-      '[data-automation="jobAdDetails"]',
-      '.k-card-content',
-      'main',
-      'article'
-    ];
-
-    for (const sel of selectors) {
-      const text = $(sel).text().replace(/\s+/g, ' ').trim();
-      if (text.length > 200) return text.slice(0, 10000);
-    }
-
-    return $('body').text().replace(/\s+/g, ' ').trim().slice(0, 10000);
-  } catch (e) {
-    console.error('Fetch description failed:', e);
-    return '';
-  }
-}
-
+/**
+ * Scrape via JSearch. Uses exactly 3 API calls per run to stay within free tier.
+ * 3 calls per day x 30 days = 90 calls/month, leaving 110 for manual mode.
+ */
 export async function scrapeAllSources(): Promise<JobListing[]> {
-  const [kalibrr, jobstreet, indeed] = await Promise.all([
-    scrapeKalibrr(),
-    scrapeJobStreet(),
-    scrapeIndeed()
-  ]);
+  // 3 strategic queries to cover the role types Francis wants
+  const queries = [
+    'fullstack developer javascript remote',
+    'react typescript developer remote',
+    'frontend developer remote'
+  ];
 
-  console.log(`Fresh jobs (within ${MAX_AGE_DAYS} days): Kalibrr=${kalibrr.length}, JobStreet=${jobstreet.length}, Indeed=${indeed.length}`);
+  const results = await Promise.all(queries.map(q => callJSearch(q)));
+  const allJobs = results.flat();
 
+  console.log(`JSearch returned ${allJobs.length} jobs from ${queries.length} queries`);
+
+  // Dedupe by company + title (JSearch sometimes returns same job from multiple sources)
   const seen = new Set<string>();
-  const all = [...kalibrr, ...jobstreet, ...indeed].filter(j => {
+  const deduped = allJobs.filter(j => {
     const key = `${j.company}::${j.title}`.toLowerCase();
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   });
 
-  all.sort((a, b) => {
+  // Freshness filter
+  const fresh = deduped.filter(j => isFresh(j.postedAt));
+
+  // Sort newest first
+  fresh.sort((a, b) => {
     const aTime = a.postedAt?.getTime() || 0;
     const bTime = b.postedAt?.getTime() || 0;
     return bTime - aTime;
   });
 
-  return all.slice(0, 15);
+  console.log(`After dedupe + freshness filter: ${fresh.length} jobs`);
+
+  return fresh.slice(0, 20); // Top 20 fresh jobs for AI to analyze
+}
+
+/**
+ * Manual mode: fetch job details by URL or pasted text.
+ * Uses 1 API call if URL is provided.
+ */
+export async function fetchJobDescription(url: string): Promise<string> {
+  // JSearch doesn't have a "get job by URL" endpoint, but for the manual mode
+  // we fall back to a basic fetch. The AI then extracts the details from the HTML.
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      }
+    });
+    if (!res.ok) return '';
+    const html = await res.text();
+    return html.slice(0, 30000);
+  } catch (e) {
+    console.error('Fetch description failed:', e);
+    return '';
+  }
 }
 
 export async function listingToJobDetails(listing: JobListing): Promise<JobDetails> {
-  const description = await fetchJobDescription(listing.url);
+  // JSearch already gave us the description, so no additional API call needed
   return {
     title: listing.title,
     company: listing.company,
     url: listing.url,
-    description: description || 'Description not available',
+    description: listing.description || 'Description not available',
     location: listing.location,
     salary: listing.salary,
     postedAt: listing.postedAt?.toISOString()
