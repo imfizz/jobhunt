@@ -11,7 +11,7 @@ interface JobListing {
   description?: string;
 }
 
-const MAX_AGE_DAYS = 3;
+const MAX_AGE_DAYS = 7;
 const MAX_AGE_MS = MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
 
 function isFresh(date?: Date): boolean {
@@ -23,11 +23,11 @@ function isFresh(date?: Date): boolean {
  * JSearch API call. Each call costs 1 request against the 200/month quota.
  * Returns up to 10 jobs per call by default.
  *
- * We use date_posted=3days to pre-filter to fresh listings.
+ * We use date_posted=week to pre-filter to fresh listings.
  */
 async function callJSearch(query: string): Promise<JobListing[]> {
   try {
-    const url = `https://jsearch.p.rapidapi.com/search?query=${encodeURIComponent(query)}&page=1&num_pages=1&date_posted=3days`;
+    const url = `https://jsearch.p.rapidapi.com/search?query=${encodeURIComponent(query)}&page=1&num_pages=1&date_posted=week`;
 
     const res = await fetch(url, {
       headers: {
@@ -104,14 +104,28 @@ export async function scrapeAllSources(): Promise<JobListing[]> {
   // Freshness filter
   const fresh = deduped.filter(j => isFresh(j.postedAt));
 
-  // Sort newest first
+  const PRIORITY_SOURCES = ['linkedin', 'jobstreet', 'indeed'];
+
+  function sourcePriority(source: string): number {
+    const lower = source.toLowerCase();
+    const idx = PRIORITY_SOURCES.findIndex(s => lower.includes(s));
+    return idx === -1 ? PRIORITY_SOURCES.length : idx;
+  }
+
+  // Sort: priority sources first, then newest first within each tier
   fresh.sort((a, b) => {
+    const priorityDiff = sourcePriority(a.source || '') - sourcePriority(b.source || '');
+    if (priorityDiff !== 0) return priorityDiff;
     const aTime = a.postedAt?.getTime() || 0;
     const bTime = b.postedAt?.getTime() || 0;
     return bTime - aTime;
   });
 
   console.log(`After dedupe + freshness filter: ${fresh.length} jobs`);
+  console.log('Source breakdown:', fresh.reduce((acc, j) => {
+    acc[j.source || 'unknown'] = (acc[j.source || 'unknown'] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>));
 
   return fresh.slice(0, 20); // Top 20 fresh jobs for AI to analyze
 }

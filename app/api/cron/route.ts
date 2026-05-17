@@ -4,12 +4,10 @@ import { generateApplication, analyzeRole, stripDashes } from '@/lib/claude';
 import { sendEmail } from '@/lib/gmail';
 import { sendWhatsApp, formatApplicationNotification } from '@/lib/whatsapp';
 
-export const maxDuration = 60;
+export const maxDuration = 300;
 
-const MIN_APPLICATIONS = 3;
 const MAX_APPLICATIONS = 5;
-const MIN_CONFIDENCE = 70;
-const MIN_MATCH_SCORE = 60;
+const MIN_CONFIDENCE = 60;
 
 export async function GET(req: NextRequest) {
   const auth = req.headers.get('authorization');
@@ -18,6 +16,8 @@ export async function GET(req: NextRequest) {
   }
 
   try {
+    await sendWhatsApp('Job scan started. Fetching fresh listings...');
+
     const listings = await scrapeAllSources();
 
     if (listings.length === 0) {
@@ -25,46 +25,67 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ ok: true, processed: 0 });
     }
 
-    const results: any[] = [];
-    let applied = 0;
-    let scanned = 0;
-    const skipped: any[] = [];
+    await sendWhatsApp(`Found ${listings.length} fresh listings. Analyzing now...`);
 
-    // Pass 1: Strict filter, try to get MIN_APPLICATIONS at high confidence
+    // Phase 1: Analyze all listings, collect those that qualify
+    type QualifiedJob = {
+      job: Awaited<ReturnType<typeof listingToJobDetails>>;
+      listing: typeof listings[number];
+      analysis: Awaited<ReturnType<typeof analyzeRole>>;
+    };
+
+    const qualified: QualifiedJob[] = [];
+    const skipReasons: Record<string, number> = {};
+
     for (const listing of listings) {
-      if (applied >= MAX_APPLICATIONS) break;
-      scanned++;
-
+      if (qualified.length >= MAX_APPLICATIONS) break;
       try {
         const job = await listingToJobDetails(listing);
         const analysis = await analyzeRole(job);
-
-        if (analysis.recommendation === 'skip' || analysis.confidence < MIN_CONFIDENCE) {
-          skipped.push({
-            job,
-            listing,
-            analysis,
-            reason: 'low confidence or skip recommendation'
-          });
-          continue;
+        if (analysis.recommendation === 'apply' && analysis.confidence >= MIN_CONFIDENCE) {
+          qualified.push({ job, listing, analysis });
+        } else {
+          const reason = analysis.recommendation === 'skip'
+            ? (!analysis.isJSFocused ? 'not JS stack' : !analysis.isRemote ? 'not remote' : !analysis.meetsSalary ? 'low salary' : !analysis.isFullstackOrRelated ? 'unrelated role' : 'skipped')
+            : `low confidence (${analysis.confidence}%)`;
+          skipReasons[reason] = (skipReasons[reason] || 0) + 1;
         }
+      } catch (e: any) {
+        console.error(`Analysis failed for ${listing.company}:`, e.message);
+        skipReasons['analysis error'] = (skipReasons['analysis error'] || 0) + 1;
+      }
+    }
 
+    const skippedCount = listings.length - qualified.length;
+    const skipSummary = Object.entries(skipReasons)
+      .sort((a, b) => b[1] - a[1])
+      .map(([reason, count]) => `${count} ${reason}`)
+      .join(', ');
+
+    if (qualified.length === 0) {
+      await sendWhatsApp(
+        `Scan complete. All ${listings.length} listings filtered out.\nReasons: ${skipSummary || 'unknown'}`
+      );
+      return NextResponse.json({ ok: true, applied: 0, totalScanned: listings.length, skipReasons });
+    }
+
+    // Announce count before sending individual notifications
+    await sendWhatsApp(
+      `${qualified.length} job${qualified.length > 1 ? 's' : ''} matched your criteria (${skippedCount} filtered: ${skipSummary}). Preparing drafts...`
+    );
+
+    // Phase 2: Generate applications and send one WhatsApp per job
+    const results: any[] = [];
+    let applied = 0;
+
+    for (let i = 0; i < qualified.length; i++) {
+      const { job, listing, analysis } = qualified[i];
+      try {
         const app = await generateApplication(job);
-
-        if (app.matchScore < MIN_MATCH_SCORE) {
-          skipped.push({
-            job,
-            listing,
-            analysis,
-            app,
-            reason: 'low match score'
-          });
-          continue;
-        }
 
         let emailId = '';
         let status: 'sent' | 'draft' | 'failed' = 'draft';
-        const emailBody = stripDashes(`${app.emailBody}\n\n---\nJob URL: ${job.url}`);
+        const emailBody = stripDashes(app.emailBody);
 
         try {
           emailId = await sendEmail(
@@ -79,6 +100,7 @@ export async function GET(req: NextRequest) {
         }
 
         await sendWhatsApp(
+          `(${i + 1}/${qualified.length}) ` +
           formatApplicationNotification({
             jobTitle: job.title,
             company: job.company,
@@ -108,80 +130,12 @@ export async function GET(req: NextRequest) {
 
         await new Promise(r => setTimeout(r, 2000));
       } catch (e: any) {
-        results.push({ company: listing.company, error: e.message });
+        results.push({ company: job.company, error: e.message });
+        await sendWhatsApp(`(${i + 1}/${qualified.length}) ❌ Failed to process ${job.company} — ${job.title}: ${e.message?.slice(0, 100)}`);
       }
     }
 
-    // Pass 2: If we didn't hit minimum, fall back to relaxed criteria using already-analyzed jobs
-    if (applied < MIN_APPLICATIONS && skipped.length > 0) {
-      // Sort skipped by best confidence+match combo, take the best remaining
-      const candidates = skipped
-        .filter(s => s.app && s.analysis.confidence >= 50)
-        .sort((a, b) => {
-          const aScore = (a.app?.matchScore || 0) + (a.analysis?.confidence || 0);
-          const bScore = (b.app?.matchScore || 0) + (b.analysis?.confidence || 0);
-          return bScore - aScore;
-        });
-
-      for (const candidate of candidates) {
-        if (applied >= MIN_APPLICATIONS) break;
-        const { job, listing, analysis, app } = candidate;
-        if (!app) continue;
-
-        let emailId = '';
-        let status: 'sent' | 'draft' | 'failed' = 'draft';
-        const emailBody = stripDashes(`${app.emailBody}\n\n---\nJob URL: ${job.url}`);
-
-        try {
-          emailId = await sendEmail(
-            process.env.GMAIL_FROM_EMAIL!,
-            `[REVIEW: stretch fit] ${app.subject}`,
-            emailBody,
-            true
-          );
-          status = 'draft';
-        } catch (e) {
-          status = 'failed';
-        }
-
-        await sendWhatsApp(
-          formatApplicationNotification({
-            jobTitle: job.title,
-            company: job.company,
-            matchScore: app.matchScore,
-            emailPreview: app.emailBody,
-            status,
-            jobUrl: job.url,
-            salary: job.salary,
-            location: job.location,
-            source: (listing as any).source,
-            jobDescription: job.description,
-            primaryStack: analysis.primaryStack,
-            roleReasoning: `(Stretch fit) ${analysis.reasoning}`
-          })
-        );
-
-        applied++;
-        results.push({
-          company: job.company,
-          title: job.title,
-          matchScore: app.matchScore,
-          analysisConfidence: analysis.confidence,
-          primaryStack: analysis.primaryStack,
-          status,
-          stretchFit: true,
-          emailId
-        });
-
-        await new Promise(r => setTimeout(r, 2000));
-      }
-    }
-
-    if (applied === 0) {
-      await sendWhatsApp(`Daily scan complete. Scanned ${listings.length} fresh jobs but none passed quality checks.`);
-    } else {
-      await sendWhatsApp(`Daily scan complete. ${applied} application drafts saved to Gmail. Review and send when ready.`);
-    }
+    await sendWhatsApp(`Done. ${applied} draft${applied > 1 ? 's' : ''} saved to Gmail. Review and send when ready.`);
 
     return NextResponse.json({
       ok: true,
@@ -190,6 +144,7 @@ export async function GET(req: NextRequest) {
       results
     });
   } catch (e: any) {
+    await sendWhatsApp(`Job scan failed: ${e.message?.slice(0, 200) || 'Unknown error'}`).catch(() => {});
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
 }
