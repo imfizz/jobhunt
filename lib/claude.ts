@@ -37,12 +37,16 @@ export interface RoleAnalysis {
  * Uses Claude to deeply analyze a job description and decide whether it truly fits.
  * This replaces dumb keyword matching with semantic understanding.
  */
-export async function analyzeRole(job: JobDetails): Promise<RoleAnalysis> {
+export async function analyzeRole(job: JobDetails, options?: { minSalaryPHP?: number }): Promise<RoleAnalysis> {
+  const minSalaryPHP = options?.minSalaryPHP ?? 120000;
+  const minSalaryUSD = Math.round(minSalaryPHP / 55);
+  const minSalaryEUR = Math.round(minSalaryPHP / 60);
+
   const prompt = `You are evaluating whether a job posting is a real fit for Francis Albert Ilacad, who is looking for:
 - Fullstack Developer, Software Engineer, JavaScript Developer, or Frontend Developer roles
 - JavaScript/TypeScript focused (React, Node.js, Next.js are his core stack)
 - Remote setup
-- Salary of at least PHP 120,000/month (or international equivalent: roughly USD 2,200+/month, EUR 2,000+/month)
+- Salary of at least PHP ${minSalaryPHP.toLocaleString()}/month (or international equivalent: roughly USD ${minSalaryUSD.toLocaleString()}+/month, EUR ${minSalaryEUR.toLocaleString()}+/month)
 - International or Philippine companies both OK
 
 Analyze this job posting and determine if it is truly a match. Be strict. Reject if:

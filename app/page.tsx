@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { RESUME } from '@/lib/resume';
 
 type GeneratedApp = {
@@ -21,7 +21,57 @@ type Job = {
   hrEmail?: string;
 };
 
+type ScanJobResult = {
+  company: string;
+  title: string;
+  matchScore?: number;
+  status?: string;
+  primaryStack?: string[];
+  error?: string;
+};
+
+type ScanResult = {
+  applied: number;
+  totalScanned: number;
+  totalAnalyzed: number;
+  results: ScanJobResult[];
+  skipReasons: Record<string, number>;
+};
+
 export default function Dashboard() {
+  // ── Scan state ────────────────────────────────────────────
+  const [minSalary, setMinSalary] = useState(120000);
+  const [scanSecret, setScanSecret] = useState('');
+  const [scanning, setScanning] = useState(false);
+  const [scanResult, setScanResult] = useState<ScanResult | null>(null);
+  const [scanError, setScanError] = useState('');
+
+  useEffect(() => {
+    const saved = localStorage.getItem('jobhunt_secret');
+    if (saved) setScanSecret(saved);
+  }, []);
+
+  async function triggerScan() {
+    setScanning(true);
+    setScanError('');
+    setScanResult(null);
+    try {
+      const res = await fetch('/api/trigger', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ minSalaryPHP: minSalary, secret: scanSecret })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Scan failed');
+      setScanResult(data);
+    } catch (e: any) {
+      setScanError(e.message);
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  // ── Manual mode state ─────────────────────────────────────
   const [mode, setMode] = useState<'url' | 'paste'>('url');
   const [url, setUrl] = useState('');
   const [jobText, setJobText] = useState('');
@@ -108,6 +158,100 @@ export default function Dashboard() {
         </p>
       </header>
 
+      {/* ── Job Scan ── */}
+      <section className="card" style={{ marginBottom: 24 }}>
+        <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 4 }}>Run Job Scan</h2>
+        <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 16 }}>
+          Searches LinkedIn, JobStreet, Indeed and more. Sends WhatsApp notifications + saves Gmail drafts.
+        </p>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+          <div>
+            <label style={{ fontSize: 12, color: 'var(--muted)', display: 'block', marginBottom: 6 }}>
+              Min salary (PHP/month)
+            </label>
+            <input
+              type="number"
+              value={minSalary}
+              step={10000}
+              onChange={e => setMinSalary(Number(e.target.value))}
+            />
+          </div>
+          <div>
+            <label style={{ fontSize: 12, color: 'var(--muted)', display: 'block', marginBottom: 6 }}>
+              Secret key
+            </label>
+            <input
+              type="password"
+              placeholder="Your CRON_SECRET"
+              value={scanSecret}
+              onChange={e => {
+                setScanSecret(e.target.value);
+                localStorage.setItem('jobhunt_secret', e.target.value);
+              }}
+            />
+          </div>
+        </div>
+
+        <button className="primary" disabled={scanning || !scanSecret} onClick={triggerScan}>
+          {scanning ? <><span className="spin">⟳</span> Scanning… this may take 1–2 min</> : 'Run Job Scan'}
+        </button>
+
+        {scanError && (
+          <div style={{ marginTop: 12, padding: 12, background: '#3a1010', border: '1px solid #5a1c1c', borderRadius: 8, fontSize: 13 }}>
+            {scanError}
+          </div>
+        )}
+
+        {scanResult && (
+          <div style={{ marginTop: 16 }}>
+            <p style={{ fontSize: 13, marginBottom: 8 }}>
+              <strong>{scanResult.applied}</strong> draft{scanResult.applied !== 1 ? 's' : ''} saved to Gmail
+              &nbsp;·&nbsp; <strong>{scanResult.totalAnalyzed}</strong> analyzed
+              &nbsp;·&nbsp; <strong>{scanResult.totalScanned}</strong> found
+            </p>
+
+            {Object.keys(scanResult.skipReasons).length > 0 && (
+              <p style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 12 }}>
+                Filtered: {Object.entries(scanResult.skipReasons).map(([k, v]) => `${v} ${k}`).join(', ')}
+              </p>
+            )}
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {scanResult.results.map((r, i) => (
+                <div key={i} style={{
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                  padding: '10px 14px', background: '#0a0a0a', border: '1px solid var(--border)', borderRadius: 8, fontSize: 13
+                }}>
+                  <div>
+                    <span style={{ fontWeight: 500 }}>{r.title}</span>
+                    <span style={{ color: 'var(--muted)', marginLeft: 8 }}>{r.company}</span>
+                    {r.error && <span style={{ color: '#e27070', marginLeft: 8 }}>— {r.error}</span>}
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    {r.matchScore != null && (
+                      <span style={{
+                        fontSize: 11, padding: '3px 8px', borderRadius: 12, fontWeight: 500,
+                        background: r.matchScore >= 75 ? '#0d3a1c' : r.matchScore >= 50 ? '#3a2e0d' : '#3a1010',
+                        color: r.matchScore >= 75 ? '#7ed98c' : r.matchScore >= 50 ? '#e2c570' : '#e27070'
+                      }}>
+                        {r.matchScore}/100
+                      </span>
+                    )}
+                    {r.status && (
+                      <span style={{ fontSize: 11, color: r.status === 'draft' ? '#7ed98c' : '#e27070' }}>
+                        {r.status.toUpperCase()}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* ── Manual Mode ── */}
       <section className="card" style={{ marginBottom: 24 }}>
         <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
           <button
