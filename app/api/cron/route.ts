@@ -2,8 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { scrapeAllSources, listingToJobDetails } from '@/lib/scraper';
 import { generateApplication, analyzeRole, stripDashes } from '@/lib/claude';
 import { sendEmail } from '@/lib/gmail';
-import { generateResumePdf } from '@/lib/pdf';
 import { sendWhatsApp, formatApplicationNotification } from '@/lib/whatsapp';
+import fs from 'fs';
+import path from 'path';
 
 export const maxDuration = 300;
 
@@ -18,6 +19,14 @@ export async function GET(req: NextRequest) {
 
   if (process.env.CRON_ENABLED === 'false') {
     return NextResponse.json({ ok: false, message: 'Cron is disabled. Set CRON_ENABLED=true to enable.' });
+  }
+
+  const isDev = process.env.NODE_ENV === 'development';
+  if (isDev) {
+    const listings = await scrapeAllSources();
+    console.log(`[DEV] Skipping Claude + WhatsApp. Found ${listings.length} listings:`);
+    listings.slice(0, 5).forEach((l, i) => console.log(`  ${i + 1}. ${l.title} — ${l.company} (${l.source})`));
+    return NextResponse.json({ ok: true, dev: true, message: 'Dev mode: Claude and WhatsApp skipped. Check terminal for listings.', count: listings.length });
   }
 
   try {
@@ -98,7 +107,8 @@ export async function GET(req: NextRequest) {
         const emailBody = stripDashes(app.emailBody);
 
         try {
-          const resumePdf = app.tailoredResume ? await generateResumePdf(app.tailoredResume) : undefined;
+          const resumePath = path.join(process.cwd(), 'public', 'resume.pdf');
+          const resumePdf = fs.existsSync(resumePath) ? fs.readFileSync(resumePath) : undefined;
           emailId = await sendEmail(
             process.env.GMAIL_FROM_EMAIL!,
             `[REVIEW] ${app.subject}`,
