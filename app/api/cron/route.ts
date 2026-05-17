@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { scrapeAllSources, listingToJobDetails } from '@/lib/scraper';
 import { generateApplication, analyzeRole, stripDashes } from '@/lib/claude';
 import { sendEmail } from '@/lib/gmail';
+import { generateResumePdf } from '@/lib/pdf';
 import { sendWhatsApp, formatApplicationNotification } from '@/lib/whatsapp';
 
 export const maxDuration = 300;
@@ -13,6 +14,10 @@ export async function GET(req: NextRequest) {
   const auth = req.headers.get('authorization');
   if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  if (process.env.CRON_ENABLED === 'false') {
+    return NextResponse.json({ ok: false, message: 'Cron is disabled. Set CRON_ENABLED=true to enable.' });
   }
 
   try {
@@ -56,7 +61,8 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    const skippedCount = listings.length - qualified.length;
+    const analyzedCount = qualified.length + Object.values(skipReasons).reduce((a, b) => a + b, 0);
+    const notAnalyzed = listings.length - analyzedCount;
     const skipSummary = Object.entries(skipReasons)
       .sort((a, b) => b[1] - a[1])
       .map(([reason, count]) => `${count} ${reason}`)
@@ -64,14 +70,17 @@ export async function GET(req: NextRequest) {
 
     if (qualified.length === 0) {
       await sendWhatsApp(
-        `Scan complete. All ${listings.length} listings filtered out.\nReasons: ${skipSummary || 'unknown'}`
+        `Scan complete. Analyzed ${analyzedCount}/${listings.length} listings, none matched.\nReasons: ${skipSummary || 'unknown'}`
       );
       return NextResponse.json({ ok: true, applied: 0, totalScanned: listings.length, skipReasons });
     }
 
+    const notAnalyzedNote = notAnalyzed > 0 ? `, ${notAnalyzed} not checked (cap reached)` : '';
+    const rejectedNote = skipSummary ? `, rejected: ${skipSummary}` : '';
+
     // Announce count before sending individual notifications
     await sendWhatsApp(
-      `${qualified.length} job${qualified.length > 1 ? 's' : ''} matched your criteria (${skippedCount} filtered: ${skipSummary}). Preparing drafts...`
+      `${qualified.length} job${qualified.length > 1 ? 's' : ''} matched out of ${analyzedCount} analyzed${rejectedNote}${notAnalyzedNote}. Preparing drafts...`
     );
 
     // Phase 2: Generate applications and send one WhatsApp per job
@@ -85,18 +94,23 @@ export async function GET(req: NextRequest) {
 
         let emailId = '';
         let status: 'sent' | 'draft' | 'failed' = 'draft';
+        let gmailError = '';
         const emailBody = stripDashes(app.emailBody);
 
         try {
+          const resumePdf = app.tailoredResume ? await generateResumePdf(app.tailoredResume) : undefined;
           emailId = await sendEmail(
             process.env.GMAIL_FROM_EMAIL!,
             `[REVIEW] ${app.subject}`,
             emailBody,
-            true
+            true,
+            resumePdf ? { filename: 'resume.pdf', content: resumePdf, mimeType: 'application/pdf' } : undefined
           );
           status = 'draft';
-        } catch (e) {
+        } catch (e: any) {
           status = 'failed';
+          gmailError = e.message?.slice(0, 120) || 'unknown error';
+          console.error('Gmail draft failed:', gmailError);
         }
 
         await sendWhatsApp(
@@ -105,6 +119,7 @@ export async function GET(req: NextRequest) {
             jobTitle: job.title,
             company: job.company,
             matchScore: app.matchScore,
+            gmailError,
             emailPreview: app.emailBody,
             status,
             jobUrl: job.url,

@@ -21,6 +21,7 @@ interface NotificationOptions {
   matchScore: number;
   emailPreview: string;
   status: 'sent' | 'draft' | 'failed';
+  gmailError?: string;
   jobUrl?: string;
   salary?: string;
   location?: string;
@@ -48,6 +49,9 @@ export function formatApplicationNotification(opts: NotificationOptions): string
 
   lines.push(`⭐ Match: ${opts.matchScore}/100`);
   lines.push(`📊 Status: ${opts.status.toUpperCase()}`);
+  if (opts.status === 'failed' && opts.gmailError) {
+    lines.push(`⚠️ Gmail error: ${opts.gmailError}`);
+  }
 
   if (opts.roleReasoning) {
     lines.push('');
@@ -63,18 +67,19 @@ export function formatApplicationNotification(opts: NotificationOptions): string
   if (opts.jobDescription) {
     lines.push('');
     lines.push('*Job description:*');
-    const trimmed = opts.jobDescription.length > 500
-      ? opts.jobDescription.slice(0, 500) + '...'
+    const trimmed = opts.jobDescription.length > 200
+      ? opts.jobDescription.slice(0, 200) + '...'
       : opts.jobDescription;
     lines.push(trimmed);
   }
 
   lines.push('');
   lines.push('*Email preview:*');
-  const previewTrimmed = opts.emailPreview.length > 300
-    ? opts.emailPreview.slice(0, 300) + '...'
+  const previewTrimmed = opts.emailPreview.length > 150
+    ? opts.emailPreview.slice(0, 150) + '...'
     : opts.emailPreview;
   lines.push(previewTrimmed);
 
-  return stripDashes(lines.join('\n'));
+  const full = stripDashes(lines.join('\n'));
+  return full.length > 1550 ? full.slice(0, 1547) + '...' : full;
 }

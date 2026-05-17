@@ -14,10 +14,31 @@ export interface JobDetails {
   postedAt?: string;
 }
 
+export interface TailoredResumeHighlight {
+  label: string;
+  description: string;
+}
+
+export interface TailoredResumeExperience {
+  title: string;
+  company: string;
+  location: string;
+  period: string;
+  summary: string;
+  highlights: TailoredResumeHighlight[];
+}
+
+export interface TailoredResumeData {
+  summary: string;
+  experience: TailoredResumeExperience[];
+  skills: string;
+}
+
 export interface GeneratedApplication {
   subject: string;
   emailBody: string;
   tailoredHighlights: string[];
+  tailoredResume: TailoredResumeData;
   matchScore: number;
   matchReasoning: string;
 }
@@ -77,7 +98,7 @@ Return ONLY this JSON object (no markdown, no code fences):
 Critical: Do NOT use em dashes (long dash) or en dashes anywhere in your response. Use commas, periods, semicolons, or parentheses instead.`;
 
   const response = await client.messages.create({
-    model: 'claude-sonnet-4-5',
+    model: 'claude-sonnet-4-6',
     max_tokens: 800,
     messages: [{ role: 'user', content: prompt }]
   });
@@ -124,6 +145,23 @@ Generate JSON with this exact shape (no markdown, no preamble):
   "subject": "Concise email subject (max 80 chars), mention role and 1 or 2 key skills. NO em dashes.",
   "emailBody": "Plain text email body. 150 to 220 words. Conversational but professional. Reference specific things from the job description that genuinely match Francis's experience. NO buzzwords. NO 'I am writing to express interest'. Start with a hook tied to the company or role. Include link to portfolio (https://www.francisilacad.com). End with a clear call to action for a 15 minute chat. Sign with full name plus phone. CRITICAL: NO em dashes anywhere, use commas or periods.",
   "tailoredHighlights": ["3 to 5 resume bullet points reordered or rephrased to match this job, but only using TRUE facts from his actual experience. NO em dashes."],
+  "tailoredResume": {
+    "summary": "2-3 sentence professional summary rewritten to emphasize what matters most for THIS job. Only true facts. NO em dashes.",
+    "experience": [
+      {
+        "title": "Exact job title from resume",
+        "company": "Exact company name",
+        "location": "Exact location",
+        "period": "Exact period string",
+        "summary": "One sentence role summary relevant to this job",
+        "highlights": [
+          { "label": "Short bold label (2-4 words)", "description": "Achievement or responsibility description. True facts only. NO em dashes." }
+        ]
+      }
+    ],
+    "experience must include all 3 jobs from the resume, reordered or rephrased to prioritize what is most relevant to this posting": true,
+    "skills": "Comma-separated skills reordered so most relevant to this job come first. Use only skills from the resume."
+  },
   "matchScore": 0-100,
   "matchReasoning": "2 sentence honest assessment of match quality. NO em dashes."
 }
@@ -131,8 +169,8 @@ Generate JSON with this exact shape (no markdown, no preamble):
 Return ONLY the JSON object. No code fences, no commentary. Remember: ZERO em dashes in any field.`;
 
   const response = await client.messages.create({
-    model: 'claude-sonnet-4-5',
-    max_tokens: 2000,
+    model: 'claude-sonnet-4-6',
+    max_tokens: 3500,
     messages: [{ role: 'user', content: prompt }]
   });
 
@@ -146,6 +184,18 @@ Return ONLY the JSON object. No code fences, no commentary. Remember: ZERO em da
     result.emailBody = stripDashes(result.emailBody);
     result.tailoredHighlights = result.tailoredHighlights.map(stripDashes);
     result.matchReasoning = stripDashes(result.matchReasoning);
+    if (result.tailoredResume) {
+      result.tailoredResume.summary = stripDashes(result.tailoredResume.summary || '');
+      result.tailoredResume.skills = stripDashes(result.tailoredResume.skills || '');
+      result.tailoredResume.experience = (result.tailoredResume.experience || []).map(exp => ({
+        ...exp,
+        summary: stripDashes(exp.summary || ''),
+        highlights: (exp.highlights || []).map(h => ({
+          label: stripDashes(h.label || ''),
+          description: stripDashes(h.description || '')
+        }))
+      }));
+    }
     return result;
   } catch (e) {
     throw new Error(`Failed to parse Claude response: ${cleaned.slice(0, 200)}`);
@@ -171,7 +221,7 @@ ${html.slice(0, 15000)}
 Return ONLY the JSON. Do not use em dashes.`;
 
   const response = await client.messages.create({
-    model: 'claude-sonnet-4-5',
+    model: 'claude-sonnet-4-6',
     max_tokens: 2500,
     messages: [{ role: 'user', content: prompt }]
   });
