@@ -1,7 +1,7 @@
 export const RESUME = {
   name: "Francis Albert Ilacad",
   phone: "+639060766219",
-  email: process.env.GMAIL_FROM_EMAIL || "your-email@gmail.com",
+  email: process.env.GMAIL_FROM_EMAIL || "filacad22@gmail.com",
   website: "https://www.francisilacad.com",
   location: "Quezon City, PH",
   openTo: "Remote roles (PH or international)",

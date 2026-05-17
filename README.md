@@ -1,37 +1,57 @@
 # JobHunt — Automated Job Application Pipeline
 
-An AI-powered job hunting bot built by **Francis Albert Ilacad**. Every day it searches for remote fullstack/JS jobs, has Claude AI analyze each one, generates a tailored application email and a reordered resume PDF, saves drafts to Gmail, and sends you a WhatsApp notification with the job details.
+An AI-powered job hunting bot built by **Francis Albert Ilacad**. Every day it searches for remote fullstack/JS jobs, has Claude AI analyze each one, generates a tailored application email, attaches your resume PDF, saves drafts to Gmail, and sends you a WhatsApp notification with the job details.
 
 ---
 
 ## How It Works (Full Flow)
 
 ```
-Vercel Cron (1:00 AM UTC daily)
+Vercel Cron (1:00 AM UTC = 9:00 AM PHT, daily)
   → GET /api/cron
       → JSearch API fetches fresh job listings (3 queries, ~20–30 results)
           Priority order: LinkedIn → JobStreet → Indeed → others
           Freshness filter: jobs posted within last 7 days
-      → Claude AI analyzes each job:
+          Deduplication: same company+title across sources removed
+
+      → Phase 1 — Claude AI analyzes each listing:
           - Is it JS/TS focused? Is it remote? Does it meet salary?
           - Confidence score must be ≥ 60% to qualify
-      → For each qualifying job (up to 5):
-          - Claude generates tailored email body
-          - Claude generates tailored resume (reordered for this job)
-          - PDF is created from the tailored resume
-          - Draft saved to Gmail with resume.pdf attached
-          - WhatsApp notification sent with job details
-      → Final WhatsApp summary sent
+          - Stops once 5 qualifying jobs are found
+
+      → WhatsApp: "X jobs matched out of Y analyzed, rejected: Z not JS stack..."
+
+      → Phase 2 — For each qualifying job:
+          - Claude generates personalized email body (150–220 words)
+          - Draft saved to Gmail with resume.pdf attached (from public/resume.pdf)
+          - WhatsApp notification sent: (1/3) 📝 Job details...
+
+      → WhatsApp: "Done. X drafts saved to Gmail. Review and send when ready."
 ```
 
-You get WhatsApp messages like:
-- `Job scan started. Fetching fresh listings...`
-- `Found 17 fresh listings. Analyzing now...`
-- `3 jobs matched out of 12 analyzed, rejected: 7 not JS stack, 2 not remote...`
-- `(1/3) 📝 Job Application — Next.js Developer at Acme Corp...`
-- `Done. 3 drafts saved to Gmail. Review and send when ready.`
+Open Gmail → read each draft → hit Send. Resume is already attached.
 
-Then open Gmail, read each draft, attach nothing (resume PDF is already attached), and hit Send.
+---
+
+## WhatsApp Message Flow
+
+Every run sends this sequence of messages:
+
+```
+Job scan started. Fetching fresh listings...
+Found 17 fresh listings. Analyzing now...
+3 jobs matched out of 12 analyzed, rejected: 7 not JS stack, 2 not remote, 1 low confidence (55%). Preparing drafts...
+(1/3) 📝 Job Application — [full job details]
+(2/3) 📝 Job Application — [full job details]
+(3/3) 📝 Job Application — [full job details]
+Done. 3 drafts saved to Gmail. Review and send when ready.
+```
+
+If a Gmail draft fails, the WhatsApp shows the exact error:
+```
+📊 Status: FAILED
+⚠️ Gmail error: invalid_grant
+```
 
 ---
 
@@ -42,10 +62,9 @@ Then open Gmail, read each draft, attach nothing (resume PDF is already attached
 | Next.js 14 | API routes + app framework | — |
 | Vercel | Hosting + cron scheduler | 2 cron jobs/day |
 | JSearch (RapidAPI) | Job board aggregator (LinkedIn, Indeed, JobStreet, etc.) | 200 req/month |
-| Claude API (Anthropic) | Job analysis + email + resume generation | Pay per use |
+| Claude API (Anthropic) | Job analysis + email generation (claude-sonnet-4-6) | Pay per use |
 | Gmail API | Save drafts to your inbox | Free |
 | Twilio WhatsApp Sandbox | Send WhatsApp notifications | Free (sandbox) |
-| PDFKit | Generate resume PDF attachment | — |
 
 ---
 
@@ -55,20 +74,22 @@ Then open Gmail, read each draft, attach nothing (resume PDF is already attached
 jobhunt/
 ├── app/
 │   └── api/
-│       ├── cron/route.ts         ← Daily automated scan (main entry point)
-│       ├── manual/route.ts       ← Manual: paste a job URL to process it
-│       ├── send/route.ts         ← Send an email + WhatsApp from the UI
+│       ├── cron/route.ts          ← Daily automated scan (main entry point)
+│       ├── manual/route.ts        ← Manual: paste a job URL to process it
+│       ├── send/route.ts          ← Send an email + WhatsApp from the UI
 │       └── test-whatsapp/route.ts ← Quick test to verify Twilio is working
 ├── lib/
-│   ├── resume.ts                 ← YOUR RESUME — edit this with your info
-│   ├── scraper.ts                ← JSearch API calls + filtering + sorting
-│   ├── claude.ts                 ← All Claude AI prompts (analyze, generate, extract)
-│   ├── gmail.ts                  ← Gmail API (save drafts, send emails)
-│   ├── whatsapp.ts               ← Twilio WhatsApp (send + format notifications)
-│   └── pdf.ts                    ← Resume PDF generator (PDFKit)
-├── vercel.json                   ← Cron schedule config
-├── .env.local                    ← Your secrets (never commit this)
-└── .env.example                  ← Template for env vars
+│   ├── resume.ts                  ← YOUR RESUME DATA — Claude reads this for email generation
+│   ├── scraper.ts                 ← JSearch API calls + dedup + priority sorting
+│   ├── claude.ts                  ← Claude AI prompts (analyzeRole, generateApplication)
+│   ├── gmail.ts                   ← Gmail API (save drafts with PDF attachment)
+│   └── whatsapp.ts                ← Twilio WhatsApp (send + format notifications)
+├── public/
+│   └── resume.pdf                 ← YOUR ACTUAL RESUME PDF — attached to every draft
+├── vercel.json                    ← Cron schedule config
+├── next.config.js                 ← Next.js config
+├── .env.local                     ← Your secrets (never commit this)
+└── .env.example                   ← Template — copy this to .env.local
 ```
 
 ---
@@ -81,70 +102,88 @@ jobhunt/
 npm install
 ```
 
-### Step 2 — Get your API keys
+### Step 2 — Add your resume PDF
 
-You need credentials from 4 services. Here's exactly where to get each one:
+Place your resume PDF at:
+```
+public/resume.pdf
+```
+
+This file is attached to every Gmail draft automatically. Update it whenever your resume changes.
+
+### Step 3 — Update your resume data
+
+Open `lib/resume.ts` — Claude reads this when generating application emails. It must match your actual resume. Update it whenever you change jobs or add skills.
+
+### Step 4 — Get your API keys
+
+You need credentials from 4 services:
 
 ---
 
 #### A. Anthropic (Claude AI)
 1. Go to https://console.anthropic.com/settings/keys
 2. Click **Create Key**
-3. Copy the key — it starts with `sk-ant-api03-...`
+3. Copy the key — starts with `sk-ant-api03-...`
+4. Add billing at https://console.anthropic.com/settings/billing (costs ~$1–5/month)
 
 ---
 
 #### B. Gmail API
-You need OAuth2 credentials so the app can save drafts to your Gmail.
+The app saves email drafts to your Gmail via OAuth2.
 
 1. Go to https://console.cloud.google.com
-2. Create a new project (or use existing)
-3. Enable the **Gmail API** (APIs & Services → Library → search "Gmail API")
-4. Go to **APIs & Services → Credentials → Create Credentials → OAuth 2.0 Client ID**
+2. Create a new project
+3. **APIs & Services → Library** → search "Gmail API" → Enable
+4. **APIs & Services → Credentials → Create Credentials → OAuth 2.0 Client ID**
 5. Application type: **Web application**
 6. Add `https://developers.google.com/oauthplayground` to **Authorized redirect URIs**
 7. Copy **Client ID** and **Client Secret**
 
 Get the Refresh Token:
 1. Go to https://developers.google.com/oauthplayground
-2. Click the gear icon (top right) → check **Use your own OAuth credentials**
+2. Click gear icon (top right) → check **Use your own OAuth credentials**
 3. Enter your Client ID and Client Secret
-4. In Step 1, find and select `Gmail API v1` → tick `https://mail.google.com/`
-5. Click **Authorize APIs** → sign in with your Gmail account
-6. In Step 2, click **Exchange authorization code for tokens**
+4. In Step 1 → find `Gmail API v1` → select `https://mail.google.com/`
+5. Click **Authorize APIs** → sign in
+6. In Step 2 → click **Exchange authorization code for tokens**
 7. Copy the **Refresh Token**
+
+> The refresh token eventually expires. When it does, the WhatsApp will show `Gmail error: invalid_grant` — just repeat these steps to get a new one.
 
 ---
 
 #### C. Twilio WhatsApp Sandbox
-The sandbox lets you send WhatsApp messages for free without a business account.
+Free sandbox for sending WhatsApp messages without a business account.
 
-1. Go to https://console.twilio.com
-2. Sign up for a free account
-3. Go to **Messaging → Try it out → Send a WhatsApp message**
-4. Note your **Account SID** and **Auth Token** from the dashboard homepage
-5. The sandbox FROM number is always: `whatsapp:+14155238886`
-6. Your TO number is your WhatsApp number with country code: `whatsapp:+639060766219`
+1. Go to https://console.twilio.com → sign up
+2. Go to **Messaging → Try it out → Send a WhatsApp message**
+3. Your **Account SID** and **Auth Token** are on the dashboard home page
+4. Sandbox FROM number is always: `whatsapp:+14155238886`
+5. Your TO number: `whatsapp:+639060766219`
 
-**IMPORTANT — Join the sandbox first:**
-From the WhatsApp number you want to receive messages on (+639060766219), send the sandbox join keyword to +1 415 523 8886. The join keyword is shown in the Twilio console under the sandbox setup. It looks like `join <word>`. You only need to do this once, but it expires after 72 hours of inactivity.
+**Join the sandbox first (required):**
+From your WhatsApp (+639060766219), send the join keyword to **+1 415 523 8886**.
+The keyword is shown in the Twilio console — looks like `join <word>`.
+
+> The sandbox expires after 72 hours of inactivity. If messages stop arriving, resend the join keyword.
 
 ---
 
 #### D. JSearch API (RapidAPI)
-JSearch aggregates jobs from LinkedIn, Indeed, JobStreet, Glassdoor, and 100+ other boards.
+Aggregates jobs from LinkedIn, Indeed, JobStreet, Glassdoor, and 100+ other boards.
 
 1. Go to https://rapidapi.com/letscrape-6bRBa3QguO5/api/jsearch
-2. Sign up and subscribe to the **Basic (Free)** plan — 200 requests/month
-3. Copy your **X-RapidAPI-Key** from the API playground
+2. Sign up → subscribe to **Basic (Free)** — 200 requests/month
+3. Copy your **X-RapidAPI-Key**
 
-The app uses 3 requests per daily run (3 queries × 1 page each). At that rate: 3 × 30 = 90 requests/month, staying within the free 200/month limit.
+> The app uses 3 requests per daily run. At 3/day × 30 days = 90/month, well within the 200 free limit.
 
 ---
 
-### Step 3 — Create `.env.local`
+### Step 5 — Create `.env.local`
 
-Copy `.env.example` to `.env.local` and fill in your values:
+Copy `.env.example` to `.env.local` and fill in all values:
 
 ```env
 # Claude AI — https://console.anthropic.com/settings/keys
@@ -165,78 +204,94 @@ TWILIO_WHATSAPP_TO=whatsapp:+639060766219
 # JSearch via RapidAPI — https://rapidapi.com/letscrape-6bRBa3QguO5/api/jsearch
 JSEARCH_API_KEY=...
 
-# Cron security — any long random string, used to authenticate cron requests
+# Cron security — any long random string
 CRON_SECRET=change-this-to-a-long-random-string
 
-# Toggle cron on/off without redeploying
+# Toggle the cron on/off without redeploying
 CRON_ENABLED=true
 
-# App URL (update after deploying to Vercel)
+# App URL — update after deploying to Vercel
 APP_URL=https://your-app.vercel.app
 
-# Filtering config
+# Job filtering
 JOB_MIN_SALARY_PHP=120000
 JOB_KEYWORDS=fullstack,javascript,typescript,react,node
 ```
 
-### Step 4 — Update your resume
-
-Open `lib/resume.ts` — this is the single source of truth for your resume. Claude reads this file when generating every email and resume PDF. Keep it up to date whenever you change jobs or add skills.
-
-### Step 5 — Run locally
+### Step 6 — Run locally
 
 ```bash
 npm run dev
 ```
 
-App runs at http://localhost:3000
-
 ---
 
-## Running the Job Scan Manually
+## Running the Job Scan
 
-The cron runs automatically on Vercel daily, but you can trigger it manually anytime from your terminal (Git Bash or any shell with `curl`):
-
+**From Git Bash (recommended on Windows):**
 ```bash
 curl -H "Authorization: Bearer your-cron-secret" http://localhost:3000/api/cron
 ```
 
-Replace `your-cron-secret` with the value of `CRON_SECRET` in your `.env.local`.
-
-On Vercel (production):
-```bash
-curl -H "Authorization: Bearer your-cron-secret" https://your-app.vercel.app/api/cron
+**From PowerShell:**
+```powershell
+Invoke-WebRequest -Uri "http://localhost:3000/api/cron" -Headers @{ Authorization = "Bearer your-cron-secret" }
 ```
+
+**On Vercel (production):**
+```bash
+curl -H "Authorization: Bearer your-cron-secret" https://jobhunt.francisilacad.com/api/cron
+```
+
+Replace `your-cron-secret` with the value of `CRON_SECRET` in your `.env.local`.
 
 ---
 
-## Testing WhatsApp Connection
+## Dev Mode vs Production Mode
 
-Before running the full scan, verify Twilio works:
+When running locally (`npm run dev`), `NODE_ENV` is automatically `development`. In this mode:
+- Claude API is **not called** (saves tokens)
+- WhatsApp is **not sent**
+- The cron just fetches listings and prints them to the terminal
 
-```bash
-curl -H "Authorization: Bearer your-cron-secret" http://localhost:3000/api/test-whatsapp
+This lets you test the JSearch scraping without spending Claude credits.
+
+**To test the full flow locally** (Claude + WhatsApp), temporarily set in `.env.local`:
+```env
+NODE_ENV=production
 ```
+Restart the dev server, run the cron, then revert it back to `development`.
 
-You should receive a test WhatsApp message within a few seconds. If not, your Twilio sandbox join has expired — resend the join keyword from your WhatsApp number.
+On Vercel, `NODE_ENV` is always `production` so the full flow runs automatically.
 
 ---
 
 ## Turning the Cron On and Off
 
-**Method 1 — Environment variable (works locally and on Vercel):**
+**Via environment variable:**
 
-In `.env.local`:
+In `.env.local` (or Vercel → Settings → Environment Variables):
 ```env
-CRON_ENABLED=true   # on
-CRON_ENABLED=false  # off
+CRON_ENABLED=true    # on
+CRON_ENABLED=false   # off
+```
+No redeployment needed on Vercel — takes effect on the next cron trigger.
+
+**Via Vercel dashboard:**
+
+Project → **Settings → Cron Jobs** → pause or resume directly.
+
+---
+
+## Testing WhatsApp
+
+Verify Twilio is working before the first full run:
+
+```bash
+curl -H "Authorization: Bearer your-cron-secret" http://localhost:3000/api/test-whatsapp
 ```
 
-On Vercel: go to **Project → Settings → Environment Variables**, update `CRON_ENABLED`, no redeployment needed.
-
-**Method 2 — Vercel dashboard:**
-
-Go to **Project → Settings → Cron Jobs** → pause or resume the cron job directly.
+You should receive a test message within seconds.
 
 ---
 
@@ -247,65 +302,59 @@ npm i -g vercel
 vercel
 ```
 
-Then go to **Vercel Dashboard → Project → Settings → Environment Variables** and add every key from your `.env.local`.
+Add all `.env.local` keys to **Vercel → Project → Settings → Environment Variables**.
 
-The cron schedule is defined in `vercel.json`:
+The cron schedule is in `vercel.json`:
 ```json
 { "crons": [{ "path": "/api/cron", "schedule": "0 1 * * *" }] }
 ```
+`0 1 * * *` = 1:00 AM UTC = 9:00 AM PHT. Edit the schedule there to change the time.
 
-`0 1 * * *` = 1:00 AM UTC = 9:00 AM Philippine Time (PHT). Change the schedule there if you want a different time.
+**Custom domain:** `jobhunt.francisilacad.com` is configured in Vercel → Settings → Domains with a CNAME record in GoDaddy pointing to Vercel.
 
 ---
 
 ## What Claude Filters Out
 
-The AI rejects a job if any of these are true:
-- Stack is primarily Java, Python, .NET, PHP, Ruby, or Go (JS must be the main language)
-- Role is DevOps, Data, ML, or QA — even if it mentions JavaScript
-- Not remote (hybrid is accepted only if Philippines-based)
-- Salary is clearly below PHP 120,000/month equivalent
-- Junior or intern level role
+Claude rejects a job if any of these are true:
+- Stack is primarily Java, Python, .NET, PHP, Ruby, or Go
+- Role is DevOps, Data/ML, or QA — even if it mentions JavaScript
+- Not remote (hybrid only accepted if Philippines-based)
+- Salary clearly below PHP 120,000/month (or ~USD 2,200/month)
+- Junior or intern level (Francis has 4+ years experience)
+- AI confidence in the match is below 60%
 
-If a job passes, Claude generates:
-1. A personalized email (150–220 words, references specific things from the job)
-2. A tailored resume PDF (same content as your real resume, reordered to highlight most relevant experience first)
-
-Both are saved as a Gmail draft with the PDF attached.
+The WhatsApp "matched X out of Y analyzed" message tells you exactly how many were rejected and why.
 
 ---
 
 ## Common Issues
 
-**"No fresh jobs found" every day**
-→ JSearch's `date_posted=week` filter might be too strict for your region. Check `lib/scraper.ts` and change the queries to be more specific.
-
-**STATUS: FAILED on Gmail draft**
-→ Your Gmail refresh token has expired. Repeat the OAuth Playground steps to get a new one (Section B above).
+**WhatsApp shows `STATUS: FAILED` + `Gmail error: invalid_grant`**
+→ Gmail refresh token expired. Redo the OAuth Playground steps (Section B) to get a new one.
 
 **WhatsApp messages stop arriving**
-→ The Twilio sandbox expires after 72 hours of no inactivity from your number. Resend the join keyword to re-activate.
+→ Twilio sandbox expired (72hr inactivity). Resend the join keyword from your WhatsApp.
 
-**"invalid x-api-key" errors in terminal**
-→ Your Anthropic API key is invalid or has no credits. Go to https://console.anthropic.com and check your key and billing.
+**"invalid x-api-key" in terminal logs**
+→ Anthropic API key invalid or no billing credits. Check https://console.anthropic.com.
 
-**PDF has missing fonts error in terminal**
-→ This is a Next.js bundling issue with PDFKit. Make sure `next.config.js` has:
-```js
-experimental: {
-  serverComponentsExternalPackages: ['pdfkit'],
-}
-```
+**"No fresh jobs found" every day**
+→ Try changing `date_posted=week` to `date_posted=month` in `lib/scraper.ts`, or adjust the search queries to be more specific to your target roles.
+
+**Cron runs but 0 jobs qualify**
+→ Check the WhatsApp skip summary (e.g. "16 not JS stack"). The JSearch queries may need tuning in `lib/scraper.ts`.
 
 ---
 
 ## Costs
 
-Running this daily costs roughly:
-- **Vercel** — Free (Hobby plan covers cron + serverless)
-- **JSearch** — Free (90 req/month out of 200 limit)
-- **Twilio** — Free (sandbox, no charge)
-- **Gmail API** — Free
-- **Claude API** — ~$0.05–0.15 per daily run (3 analyzeRole calls + up to 5 generateApplication calls using claude-sonnet-4-6)
+| Service | Cost |
+|---|---|
+| Vercel Hobby | Free |
+| JSearch | Free (90/200 req/month used) |
+| Twilio Sandbox | Free |
+| Gmail API | Free |
+| Claude API | ~$0.05–0.15 per daily run |
 
-Total: roughly **$1.50–4.50/month** depending on how many jobs qualify each day.
+**Total: ~$1.50–4.50/month** depending on how many jobs qualify each day.
